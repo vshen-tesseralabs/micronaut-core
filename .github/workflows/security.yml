@@ -1,0 +1,90 @@
+name: Security
+on:
+  pull_request:
+    branches: [5.1.x, main]
+  push:
+    branches: [security-test-pr]
+
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  # =================== SAST: CodeQL (BLOCKING via UI threshold) ===================
+  codeql:
+    name: CodeQL (SAST)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: java-kotlin
+          build-mode: none
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: codeql
+
+  # =================== Secrets: Gitleaks (BLOCKING) ===================
+  gitleaks:
+    name: Gitleaks (Secrets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # =================== SCA: Dependency Review (BLOCKING on High+) ===================
+  dependency-review:
+    name: Dependency Review (SCA)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: always
+
+  # =================== SCA: OSV-Scanner (informational) ===================
+  osv-scanner:
+    name: OSV Scanner (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google/osv-scanner-action/.github/actions/osv-scanner@v2.0.0
+        with:
+          scan-args: |-
+            --recursive
+            --skip-git
+            --format=sarif
+            --output=osv.sarif
+            ./
+        continue-on-error: true
+      - if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: osv.sarif
+          category: osv-scanner
+        continue-on-error: true
+
+  # =================== DAST: ZAP Baseline (informational) ===================
+  zap-baseline:
+    name: ZAP Baseline (informational, DAST)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: zaproxy/action-baseline@v0.13.0
+        with:
+          target: 'https://www.example.com'
+          cmd_options: '-I'
+          allow_issue_writing: false
+          fail_action: false
