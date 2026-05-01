@@ -1,0 +1,100 @@
+name: Security
+on:
+  pull_request:
+    branches: [5.1.x, main]
+  push:
+    branches: [5.1.x, main, security-test-pr]
+  schedule:
+    - cron: '0 4 * * 1'  # Weekly Monday 04:00 UTC
+
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  # =================== SAST: CodeQL ===================
+  # Blocks PR on High/Critical via Code Scanning UI threshold
+  codeql:
+    name: CodeQL (SAST)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: 'java-kotlin'
+          queries: security-extended
+          build-mode: none      # Use scanning-only mode (no Gradle build needed)
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: 'codeql'
+
+  # =================== SAST: Semgrep (informational) ===================
+  semgrep:
+    name: Semgrep (informational)
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      - run: semgrep ci --sarif --output=semgrep.sarif || true
+      - if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+  # =================== SCA: Dependency Review (PR-only) ===================
+  # BLOCKS PR on High/Critical
+  dependency-review:
+    name: Dependency Review (SCA)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: always
+
+  # =================== SCA: OSV-Scanner (informational) ===================
+  osv-scanner:
+    name: OSV Scanner (informational)
+    if: github.event_name == 'pull_request'
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@v1
+    with:
+      upload-sarif: true
+      fail-on-vuln: false
+
+  # =================== Secrets: Gitleaks ===================
+  # BLOCKS PR on any verified leak
+  gitleaks:
+    name: Gitleaks (Secrets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # =================== DAST: ZAP Baseline (informational) ===================
+  # Scans GitHub Pages site for the repo (passive only). For real DAST,
+  # replace target with a deployed preview URL.
+  zap-baseline:
+    name: ZAP Baseline (informational)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.13.0
+        with:
+          target: 'https://github.com/vshen-tesseralabs/micronaut-core'
+          cmd_options: '-I'           # Informational mode: never fails
+          allow_issue_writing: false
+          fail_action: false
